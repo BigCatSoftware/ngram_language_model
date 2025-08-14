@@ -1,0 +1,335 @@
+import os
+import re
+import math
+import random
+from collections import defaultdict
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.stem import PorterStemmer
+import string
+
+# Download required NLTK data
+def download_nltk_resources():
+    """Download necessary NLTK resources"""
+    try:
+        nltk.download('stopwords', quiet=True)
+        nltk.download('punkt', quiet=True)
+        print("NLTK resources downloaded successfully.")
+    except Exception as e:
+        print(f"Warning: Could not download NLTK resources: {e}")
+
+def load_stopwords():
+    """Load stopwords using NLTK"""
+    try:
+        return set(stopwords.words('english'))
+    except Exception as e:
+        print(f"Error loading NLTK stopwords: {e}")
+        print("Please ensure NLTK is installed and stopwords are downloaded.")
+        raise
+
+def process_data(review, use_stemming=False):
+    """
+    Process a single review using NLTK tokenization and stopwords
+    Returns a list of cleaned words
+    
+    Example:
+    review = "This is a great movie !"
+    print(process_data(review))
+    # Output: ['great', 'movie']
+    """
+    stopwords_set = load_stopwords()
+    
+    # Convert to lowercase
+    review = review.lower()
+    
+    # Use NLTK tokenization
+    tokens = word_tokenize(review)
+    
+    # Remove punctuation and stopwords
+    words = []
+    stemmer = PorterStemmer() if use_stemming else None
+    
+    for token in tokens:
+        # Remove punctuation - only keep alphabetic tokens
+        if token.isalpha() and token not in stopwords_set:
+            # Optional: Apply stemming
+            if use_stemming and stemmer:
+                token = stemmer.stem(token)
+            words.append(token)
+    
+    return words
+
+def load_reviews_from_folder(folder_path, label):
+    """
+    Load all review files from a folder and return list of (review_text, label) tuples
+    """
+    reviews = []
+    if not os.path.exists(folder_path):
+        print(f"Warning: Folder {folder_path} not found.")
+        return reviews
+    
+    for filename in os.listdir(folder_path):
+        if filename.endswith('.txt'):
+            file_path = os.path.join(folder_path, filename)
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                    reviews.append((content, label))
+            except Exception as e:
+                print(f"Error reading {file_path}: {e}")
+    
+    return reviews
+
+def count_reviews(reviews, use_stemming=False):
+    """
+    Count word frequencies for each class
+    Returns a dictionary with (word, class) as key and count as value
+    
+    Example:
+    Given reviews ["i am rather excited", "you are rather happy"] with label 1:
+    Returns: {("rather", 1): 2, ("excited", 1): 1, ("happy", 1): 1}
+    """
+    word_counts = defaultdict(int)
+    
+    for review, label in reviews:
+        words = process_data(review, use_stemming)
+        for word in words:
+            word_counts[(word, label)] += 1
+    
+    return dict(word_counts)
+
+def train_naiveBayes(word_counts, reviews):
+    """
+    Train the Naive Bayes classifier
+    Returns logprior and loglikelihood dictionary
+    
+    Formulas used:
+    - Prior: P(D_pos) = D_pos / D, P(D_neg) = D_neg / D
+    - logprior = log(P(D_pos)) - log(P(D_neg))
+    - P(w|pos) = (freq_pos + 1) / (N_pos + V)
+    - P(w|neg) = (freq_neg + 1) / (N_neg + V)
+    - loglikelihood = log(P(w|pos)) - log(P(w|neg))
+    """
+    # Count total documents and documents per class
+    total_docs = len(reviews)
+    pos_docs = sum(1 for _, label in reviews if label == 1)
+    neg_docs = sum(1 for _, label in reviews if label == 0)
+    
+    # Calculate logprior = log(P(D_pos)) - log(P(D_neg))
+    logprior = math.log(pos_docs / total_docs) - math.log(neg_docs / total_docs)
+    
+    # Count total words per class (N_pos, N_neg)
+    pos_words = sum(count for (word, label), count in word_counts.items() if label == 1)
+    neg_words = sum(count for (word, label), count in word_counts.items() if label == 0)
+    
+    # Get vocabulary size (V - unique words across all classes)
+    vocabulary = set(word for word, label in word_counts.keys())
+    vocab_size = len(vocabulary)
+    
+    print(f"Vocabulary size: {vocab_size}")
+    print(f"Total positive words: {pos_words}")
+    print(f"Total negative words: {neg_words}")
+    
+    # Calculate loglikelihood for each word
+    loglikelihood = {}
+    
+    for word in vocabulary:
+        # Get frequencies for this word in positive and negative classes
+        freq_pos = word_counts.get((word, 1), 0)
+        freq_neg = word_counts.get((word, 0), 0)
+        
+        # Apply Laplace smoothing (Add-1)
+        prob_pos = (freq_pos + 1) / (pos_words + vocab_size)
+        prob_neg = (freq_neg + 1) / (neg_words + vocab_size)
+        
+        # Calculate loglikelihood = log(P(w|pos)) - log(P(w|neg))
+        loglikelihood[word] = math.log(prob_pos) - math.log(prob_neg)
+    
+    return logprior, loglikelihood
+
+def predict_naiveBayes(review, logprior, loglikelihood, use_stemming=False):
+    """
+    Predict the sentiment of a review
+    Returns the probability score
+    
+    Formula: score = logprior + sum(loglikelihood[word] for word in review)
+    """
+    words = process_data(review, use_stemming=use_stemming)
+    
+    # Sum loglikelihoods of words in the review
+    log_sum = logprior
+    for word in words:
+        if word in loglikelihood:
+            log_sum += loglikelihood[word]
+    
+    return log_sum
+
+def test_naiveBayes(test_reviews, logprior, loglikelihood, use_stemming=False):
+    """
+    Test the classifier and return accuracy
+    
+    Rule: if predict_naiveBayes() > 0 assign label 1 (positive), else 0 (negative)
+    Accuracy = (# of reviews classified correctly) / (total # of reviews)
+    """
+    correct = 0
+    total = len(test_reviews)
+    predictions = []
+    
+    for review, actual_label in test_reviews:
+        prediction_score = predict_naiveBayes(review, logprior, loglikelihood, use_stemming)
+        predicted_label = 1 if prediction_score > 0 else 0
+        predictions.append((review, actual_label, predicted_label, prediction_score))
+        
+        if predicted_label == actual_label:
+            correct += 1
+    
+    accuracy = correct / total
+    return accuracy, predictions
+
+def error_analysis(predictions, output_file='error_analysis.txt'):
+    """
+    Perform error analysis and write misclassified reviews to file
+    """
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write("Truth\tPredicted\tReview\n")
+        f.write("-" * 80 + "\n")
+        
+        error_count = 0
+        for review, actual_label, predicted_label, score in predictions:
+            if predicted_label != actual_label:
+                error_count += 1
+                # Clean and truncate review for readability
+                review_text = review.replace('\n', ' ').replace('\t', ' ')
+                if len(review_text) > 100:
+                    review_text = review_text[:100] + "..."
+                f.write(f"{actual_label}\t{predicted_label}\t{review_text}\n")
+        
+        f.write(f"\nTotal errors: {error_count}\n")
+    
+    print(f"Error analysis complete. {error_count} misclassified reviews saved to {output_file}")
+
+def predict_lion_king_reviews(filename='LionKing_MovieReviews.txt', logprior=None, loglikelihood=None, output_file='LionKing_Output.txt', use_stemming=False):
+    """
+    Predict sentiments for Lion King movie reviews and save to file
+    """
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            reviews = [line.strip() for line in f.readlines() if line.strip()]
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write("Lion King Movie Review Sentiment Analysis\n")
+            f.write("=" * 50 + "\n\n")
+            
+            for i, review in enumerate(reviews, 1):
+                if review:
+                    prediction_score = predict_naiveBayes(review, logprior, loglikelihood, use_stemming)
+                    sentiment = "Positive" if prediction_score > 0 else "Negative"
+                    
+                    f.write(f"Review {i}:\n")
+                    f.write(f'"{review}"\n')
+                    f.write(f"Sentiment: {sentiment} (Score: {prediction_score:.4f})\n")
+                    f.write("-" * 50 + "\n")
+                    
+                    # Also print to console
+                    print(f"Review {i}: {sentiment} (Score: {prediction_score:.4f})")
+                    
+    except FileNotFoundError:
+        print(f"Error: {filename} not found.")
+
+def demonstrate_example():
+    """Demonstrate the process_data function as shown in assignment"""
+    print("\n=== Demonstrating process_data() function ===")
+    print("import nltk")
+    print("from nltk.corpus import stopwords")
+    print("nltk.download('stopwords')")
+    print("print(stopwords.words('english'))")
+    
+    # Show NLTK stopwords
+    nltk_stopwords = stopwords.words('english')
+    print(f"NLTK English stopwords (first 20): {nltk_stopwords[:20]}")
+    
+    review = "This is a great movie !"
+    processed = process_data(review)
+    print(f"\nreview = \"This is a great movie !\"")
+    print(f"print(process_data(review))")
+    print(f"{processed}")
+
+def main():
+    """
+    Main function to run the complete sentiment analysis pipeline
+    """
+    print("=== Naive Bayes Sentiment Analysis ===")
+    
+    # Download NLTK resources
+    download_nltk_resources()
+    
+    # Demonstrate the example from assignment
+    demonstrate_example()
+    
+    print("\nLoading movie reviews...")
+    
+    # Load positive and negative reviews
+    pos_reviews = load_reviews_from_folder('pos/pos', 1)
+    neg_reviews = load_reviews_from_folder('neg/neg', 0)
+    
+    # Combine all reviews
+    all_reviews = pos_reviews + neg_reviews
+    
+    if not all_reviews:
+        print("No reviews found. Please check your folder structure.")
+        print("Expected structure:")
+        print("  pos/pos/  (containing positive review .txt files)")
+        print("  neg/neg/  (containing negative review .txt files)")
+        return
+    
+    print(f"Loaded {len(pos_reviews)} positive and {len(neg_reviews)} negative reviews.")
+    
+    # Shuffle and split into training and testing sets (80-20 split)
+    random.seed(42)  # For reproducible results
+    random.shuffle(all_reviews)
+    split_point = int(0.8 * len(all_reviews))
+    train_reviews = all_reviews[:split_point]
+    test_reviews = all_reviews[split_point:]
+    
+    print(f"Training set: {len(train_reviews)} reviews")
+    print(f"Test set: {len(test_reviews)} reviews")
+    
+    # Step 2: Count reviews
+    print("\n=== Step 2: Creating Dictionary ===")
+    use_stemming = False  # Set to True if you want to use stemming
+    word_counts = count_reviews(train_reviews, use_stemming)
+    print(f"Total word-class pairs: {len(word_counts)}")
+    
+    # Step 3: Train Naive Bayes
+    print("\n=== Step 3: Training Naive Bayes Model ===")
+    logprior, loglikelihood = train_naiveBayes(word_counts, train_reviews)
+    print(f"Logprior: {logprior:.4f}")
+    print(f"Loglikelihood dictionary size: {len(loglikelihood)}")
+    
+    # Step 4: Test Naive Bayes
+    print("\n=== Step 4: Testing Naive Bayes ===")
+    accuracy, predictions = test_naiveBayes(test_reviews, logprior, loglikelihood, use_stemming)
+    print(f'Naive Bayes accuracy = {accuracy:.4f}')
+    
+    # Test the example from assignment
+    test_review = "Great movie !"
+    p = predict_naiveBayes(test_review, logprior, loglikelihood, use_stemming)
+    print(f'Test review "{test_review}" prediction: {p:.4f}')
+    
+    # Step 5: Error Analysis
+    print("\n=== Step 5: Error Analysis ===")
+    error_analysis(predictions)
+    
+    # Step 6: Predict Lion King reviews
+    print("\n=== Step 6: Lion King Movie Review Predictions ===")
+    predict_lion_king_reviews('LionKing_MovieReviews.txt', logprior, loglikelihood, use_stemming=use_stemming)
+    print("Lion King predictions saved to LionKing_Output.txt")
+    
+    print("\n=== Analysis Complete ===")
+    print("Files generated:")
+    print("  - error_analysis.txt")
+    print("  - LionKing_Output.txt")
+
+if __name__ == "__main__":
+    main()
