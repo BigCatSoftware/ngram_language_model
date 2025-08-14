@@ -13,7 +13,7 @@ Supports **unigram** and **bigram** models with Add-*k* smoothing, sentence prob
 ## Installation
 ```bash
 # Clone this repository
-git clone https://github.com/<your-username>/ngram_language_model.git
+git clone https://github.com/BigCatSoftware/ngram_language_model.git
 cd ngram_language_model
 
 # (Optional) Create and activate a virtual environment
